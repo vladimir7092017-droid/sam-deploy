@@ -1,0 +1,45 @@
+name: SmartAngar SSH check
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ssh-check:
+    if: github.ref == 'refs/heads/main'
+    environment: production-smartangar
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      SAM_HOST: ${{ vars.SAM_HOST }}
+      SAM_HOST_FINGERPRINT: ${{ vars.SAM_HOST_FINGERPRINT }}
+      SAM_SSH_KEY: ${{ secrets.SAM_SSH_KEY }}
+    steps:
+      - name: Verify the host and run the restricted access check
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${SAM_HOST:?Set the environment variable SAM_HOST}"
+          : "${SAM_HOST_FINGERPRINT:?Set the verified host fingerprint}"
+          : "${SAM_SSH_KEY:?Set the environment secret SAM_SSH_KEY}"
+          [[ "$SAM_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          directory=$(mktemp -d)
+          trap 'rm -rf -- "$directory"' EXIT
+          printf '%s\n' "$SAM_SSH_KEY" > "$directory/key"
+          unset SAM_SSH_KEY
+          ssh-keyscan -T 10 -t ed25519 "$SAM_HOST" > "$directory/known_hosts" 2>/dev/null
+          fingerprint=$(ssh-keygen -lf "$directory/known_hosts" | awk '{print $2}')
+          [[ "$fingerprint" == "$SAM_HOST_FINGERPRINT" ]] || {
+            echo "::error::The SAM SSH host fingerprint did not match."
+            exit 1
+          }
+          result=$(ssh -F /dev/null -T -i "$directory/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=10 -o UserKnownHostsFile="$directory/known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null "site-deploy@$SAM_HOST" check-smartangar)
+          [[ "$result" == 'smartangar-ssh-check-ok' ]] || {
+            echo "::error::The restricted server check did not confirm access."
+            exit 1
+          }
+          echo 'Verified SSH identity and access to all three SmartAngar roots.'
