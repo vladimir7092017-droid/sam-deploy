@@ -1,0 +1,56 @@
+name: SITE-004 restricted public email release
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Manually approved operation for смартангар.рф only'
+        required: true
+        type: choice
+        options:
+          - inventory
+          - prepare
+          - publish
+          - rollback
+
+permissions: {}
+
+jobs:
+  restricted:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production-smartangar
+    timeout-minutes: 6
+    env:
+      SAM_HOST: ${{ vars.SAM_HOST }}
+      SAM_HOST_FINGERPRINT: ${{ vars.SAM_HOST_FINGERPRINT }}
+      SAM_SSH_KEY: ${{ secrets.SAM_SSH_KEY }}
+      OPERATION: ${{ inputs.operation }}
+    steps:
+      - name: Check expected host and execute only approved SITE-004 command
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${SAM_HOST:?Missing SAM_HOST}"
+          : "${SAM_HOST_FINGERPRINT:?Missing verified SAM_HOST_FINGERPRINT}"
+          : "${SAM_SSH_KEY:?Missing protected SAM_SSH_KEY}"
+          [[ "$SAM_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          case "$OPERATION" in
+            inventory|prepare|publish|rollback) ;;
+            *) exit 1 ;;
+          esac
+          directory=$(mktemp -d)
+          trap 'rm -rf -- "$directory"' EXIT
+          printf '%s\n' "$SAM_SSH_KEY" > "$directory/key"
+          unset SAM_SSH_KEY
+          ssh-keyscan -T 10 -t ed25519 "$SAM_HOST" > "$directory/known_hosts" 2>/dev/null
+          fingerprint=$(ssh-keygen -lf "$directory/known_hosts" | awk '{print $2}')
+          [[ "$fingerprint" == "$SAM_HOST_FINGERPRINT" ]] || {
+            echo '::error::SAM SSH fingerprint mismatch'
+            exit 1
+          }
+          ssh -F /dev/null -T -i "$directory/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=10 -o UserKnownHostsFile="$directory/known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null "site-deploy@$SAM_HOST" "site004-$OPERATION"
