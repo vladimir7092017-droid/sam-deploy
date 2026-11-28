@@ -1,4 +1,5 @@
 import hashlib
+import fcntl
 import json
 from pathlib import Path
 import sys
@@ -100,6 +101,17 @@ class Site004Tests(unittest.TestCase):
         self.manifest.write_text(json.dumps(obj), encoding='utf-8')
         with self.assertRaises(ValueError):
             self.run_operation('prepare')
+
+    def test_lock_contention_refuses_prepare_without_changes(self):
+        lock = self.home / 'backup.lock'
+        with lock.open('xb') as handle:
+            lock.chmod(0o600)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):
+                self.run_operation('prepare')
+            self.assertFalse(self.backup.exists())
+            self.assertEqual(self.file.read_bytes(), self.original)
+        self.assertEqual(self.run_operation('prepare')['prepared'], 1)
 
     def test_backup_cannot_be_overwritten(self):
         self.run_operation('prepare')
