@@ -5,6 +5,7 @@ Not a general-purpose remote shell or general replacement utility. An authorized
 server administrator must install it and a reviewed manifest before use.
 """
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -171,6 +172,22 @@ def inventory(root):
 
 
 def execute(operation, root=ROOT, manifest_path=MANIFEST, backup=BACKUP):
+    if os.geteuid() == 0:
+        raise PermissionError('Do not run release as root')
+    # Serialize all operations against the same backup namespace.
+    lock_path = backup.parent / (backup.name + '.lock')
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        s = os.fstat(fd)
+        if not stat.S_ISREG(s.st_mode) or s.st_uid != os.geteuid() or s.st_nlink != 1 or stat.S_IMODE(s.st_mode) & 0o077:
+            raise PermissionError('Unsafe release lock')
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return _execute_locked(operation, root, manifest_path, backup)
+    finally:
+        os.close(fd)
+
+
+def _execute_locked(operation, root, manifest_path, backup):
     if os.geteuid() == 0:
         raise PermissionError('Do not run release as root')
     root = root.resolve(strict=True)
